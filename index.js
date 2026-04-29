@@ -11,26 +11,40 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// Serve static files (this must be before routes)
-app.use(express.static('public'));
+// Serve static files - Railway optimized
+app.use(express.static(path.join(__dirname, 'public')));
 
-// Explicit root route (helps on Railway)
+// Explicit root route
 app.get('/', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
-// Redis Client
+// ======================
+// REDIS CLIENT - Railway Optimized
+// ======================
 const redisClient = createClient({ 
-  url: process.env.REDIS_URL 
-});
-
-redisClient.connect().catch(err => {
-  console.error("Redis connection failed:", err.message);
+  url: process.env.REDIS_URL,
+  socket: {
+    reconnectStrategy: (retries) => Math.min(retries * 100, 5000),
+  }
 });
 
 redisClient.on('error', err => {
-  console.error('Redis Client Error:', err);
+  console.error('❌ Redis Client Error:', err);
 });
+
+redisClient.on('connect', () => console.log('🔄 Connecting to Redis...'));
+redisClient.on('ready', () => {
+  console.log('✅ Redis connected successfully - using Set + Hashes for claims');
+});
+
+(async () => {
+  try {
+    await redisClient.connect();
+  } catch (err) {
+    console.error('❌ Failed to connect to Redis:', err.message);
+  }
+})();
 
 // Your secret inscription IDs
 const allowedInscriptionIds = new Set(
@@ -77,13 +91,11 @@ app.get('/api/verify', async (req, res) => {
   if (!address) return res.status(400).json({ error: 'Address required' });
 
   try {
-    // Check if already claimed
     const isClaimed = await redisClient.sIsMember('claimed-addresses', address.toLowerCase());
     if (isClaimed) {
       return res.json({ verified: false, message: 'This wallet has already claimed.' });
     }
 
-    // Check inscriptions
     const inscriptions = await getUserInscriptions(address);
     const match = inscriptions.find(ins => allowedInscriptionIds.has(ins.inscriptionId));
 
@@ -112,11 +124,9 @@ app.post('/api/claim', async (req, res) => {
   }
 
   try {
-    // Double-check already claimed
     const isClaimed = await redisClient.sIsMember('claimed-addresses', address.toLowerCase());
     if (isClaimed) return res.status(400).json({ error: 'Already claimed' });
 
-    // Double-check ownership
     const inscriptions = await getUserInscriptions(address);
     const match = inscriptions.find(ins => allowedInscriptionIds.has(ins.inscriptionId));
     if (!match) return res.status(400).json({ error: 'Invalid inscription' });
@@ -124,7 +134,7 @@ app.post('/api/claim', async (req, res) => {
     // Mark as claimed
     await redisClient.sAdd('claimed-addresses', address.toLowerCase());
 
-    // Save claim data
+    // Save claim data (with shipped field)
     const claimData = {
       address,
       name,
@@ -132,6 +142,7 @@ app.post('/api/claim', async (req, res) => {
       notes: notes || '',
       inscriptionId: match.inscriptionId,
       timestamp: new Date().toISOString(),
+      shipped: 'false'
     };
 
     await redisClient.hSet(`claim:${address}`, claimData);
@@ -144,9 +155,84 @@ app.post('/api/claim', async (req, res) => {
   }
 });
 
+// ======================
+// ADMIN ROUTE (simple password protection)
+// ======================
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'change-this-in-railway';
+
+app.get('/admin', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'admin.html'));
+});
+
+// ======================
+// ADMIN CLAIMS LIST (with shipped status)
+// ======================
+app.get('/api/admin/claims', async (req, res) => {
+  const { pass } = req.query;
+  if (pass !== ADMIN_PASSWORD) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+
+  try {
+    const claimKeys = await redisClient.keys('claim:*') || [];
+    
+    const claims = [];
+    for (const key of claimKeys) {
+      const data = await redisClient.hGetAll(key);
+      if (Object.keys(data).length > 0) {
+        claims.push({
+          address: data.address,
+          name: data.name,
+          shippingAddress: data.shippingAddress,
+          notes: data.notes || '',
+          inscriptionId: data.inscriptionId,
+          timestamp: data.timestamp,
+          shipped: data.shipped || false   // ← Important for checkbox
+        });
+      }
+    }
+
+    // Sort newest first
+    claims.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+
+    res.json({ 
+      total: claims.length, 
+      claims 
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// ======================
+// MARK AS SHIPPED
+// ======================
+app.post('/api/admin/mark-shipped', async (req, res) => {
+  const { pass, address, shipped } = req.body;
+
+  if (pass !== ADMIN_PASSWORD) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+
+  if (!address) {
+    return res.status(400).json({ error: 'Address required' });
+  }
+
+  try {
+    const key = `claim:${address}`;
+    await redisClient.hSet(key, 'shipped', shipped ? 'true' : 'false');
+    console.log(`📦 Claim ${address} marked as shipped: ${shipped}`);
+    res.json({ success: true });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
 // Start Server
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
-  console.log(`📁 Serving frontend from /public`);
+  console.log(`📁 Serving frontend from ${path.join(__dirname, 'public')}`);
 });
