@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Claim Page - Connect Wallet</title>
+    <style>
+        /* (same styles as before - I kept them identical) */
+        body { font-family: Arial, sans-serif; background: #0f0f0f; color: #fff; text-align: center; padding: 40px 20px; }
+        h1 { margin-bottom: 10px; }
+        .wallet-buttons { margin: 30px auto; max-width: 300px; }
+        button { padding: 16px 24px; font-size: 1.1em; border-radius: 8px; border: none; cursor: pointer; width: 100%; }
+        .unisat { background: #ffb800; color: #222; font-weight: bold; }
+        .unisat:hover { background: #ffcc33; }
+        .status { margin: 30px auto; font-size: 1.2em; min-height: 60px; max-width: 600px; }
+        .success { color: #4ade80; }
+        #claim-form { display: none; max-width: 600px; margin: 40px auto; text-align: left; background: #1a1a1a; padding: 30px; border-radius: 12px; }
+        table { width: 100%; border-collapse: collapse; }
+        td { padding: 12px 0; }
+        td:first-child { width: 180px; font-weight: bold; }
+        input, textarea { width: 100%; padding: 10px; border-radius: 6px; border: 1px solid #444; background: #222; color: #fff; font-size: 1em; }
+        textarea { height: 80px; resize: vertical; }
+        .submit-btn { background: #4ade80; color: #000; font-weight: bold; margin-top: 20px; }
+        .submit-btn:hover { background: #22c55e; }
+    </style>
+</head>
+<body>
+    <h1>Claim Your Toy</h1>
+    <p>Connect with UniSat • Only verified holders can claim (once)</p>
+    
+    <div class="wallet-buttons">
+        <button class="unisat" id="unisat-connect">Connect with UniSat</button>
+    </div>
+    
+    <div class="status" id="status"></div>
+
+    <div id="claim-form">
+        <h2>🎉 Claim Form</h2>
+        <p>Your inscription has been verified. Please fill in shipping details.</p>
+        
+        <form id="claimDetailsForm">
+            <table>
+                <tr><td>Name / Pseudonym:</td><td><input type="text" id="name" placeholder="e.g. SatoshiFan42" required></td></tr>
+                <tr><td>Shipping Address:</td><td><textarea id="address" placeholder="Full address including name, street, city, postal code, country" required></textarea></td></tr>
+                <tr><td>Notes (optional):</td><td><textarea id="notes" placeholder="Preferred color, special requests..."></textarea></td></tr>
+            </table>
+            <button type="submit" class="submit-btn">Submit Claim</button>
+        </form>
+    </div>
+
+    <script>
+        const connectBtn = document.getElementById('unisat-connect');
+        const statusEl = document.getElementById('status');
+        const claimForm = document.getElementById('claim-form');
+
+        async function connectAndCheck() {
+            statusEl.textContent = "Connecting...";
+
+            if (!window.unisat) {
+                statusEl.textContent = "❌ UniSat Wallet not found.";
+                return;
+            }
+
+            try {
+                const accounts = await window.unisat.requestAccounts();
+                const address = accounts[0];
+
+                statusEl.textContent = `✅ Connected: ${address.slice(0,6)}...${address.slice(-4)}`;
+
+                const verifyRes = await fetch(`/api/verify?address=${address}`);
+                const data = await verifyRes.json();
+
+                if (data.verified) {
+                    statusEl.innerHTML = `🎉 <span class="success">VERIFIED HOLDER!</span><br>Inscription: <strong>${data.inscriptionId.slice(0,12)}...</strong>`;
+                    connectBtn.style.display = "none";
+                    claimForm.style.display = "block";
+                } else {
+                    statusEl.innerHTML = `❌ ${data.message || 'Not eligible'}`;
+                }
+            } catch (err) {
+                statusEl.textContent = "❌ Connection failed.";
+                console.error(err);
+            }
+        }
+
+        document.getElementById('claimDetailsForm').onsubmit = async (e) => {
+            e.preventDefault();
+            const address = (await window.unisat.requestAccounts())[0];
+
+            const payload = {
+                address,
+                name: document.getElementById('name').value.trim(),
+                shippingAddress: document.getElementById('address').value.trim(),
+                notes: document.getElementById('notes').value.trim()
+            };
+
+            const res = await fetch('/api/claim', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+
+            const result = await res.json();
+            if (result.success) {
+                claimForm.innerHTML = `<h2 style="color:#4ade80">✅ Claim submitted successfully!<br>We will ship your toy soon.</h2>`;
+            } else {
+                alert(result.error || 'Claim failed');
+            }
+        };
+
+        connectBtn.onclick = connectAndCheck;
+    </script>
+</body>
+</html>
